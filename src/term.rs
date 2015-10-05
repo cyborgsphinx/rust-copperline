@@ -103,7 +103,7 @@ impl Term {
     fn check_newline(&self) -> bool {
         stdout().write(b"\x1b[6n");
         stdout().flush();
-        let mut sin = stdin();
+        let sin = stdin();
         let mut buf = vec![];
         sin.lock().read_until(82, &mut buf);
         buf.reverse();
