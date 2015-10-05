@@ -22,12 +22,16 @@ extern crate strcursor;
 
 mod enc;
 mod error;
+mod builder;
 mod buffer;
 mod history;
 mod parser;
 mod instr;
+mod edit;
+mod run;
 mod term;
 
+use std::mem::drop;
 use std::os::unix::io::{RawFd, AsRawFd};
 
 use encoding::types::EncodingRef;
@@ -36,84 +40,9 @@ use encoding::all::{ASCII, UTF_8};
 pub use enc::Encoding;
 pub use error::Error;
 use history::History;
-use buffer::Buffer;
-use term::{Term, RawMode};
-
-struct EditCtx<'a> {
-    term: &'a mut Term,
-    raw: &'a mut RawMode,
-    history: &'a History,
-    prompt: &'a str,
-    enc: EncodingRef
-}
-
-fn edit<'a>(ctx: EditCtx<'a>) -> Result<String, Error> {
-    let mut buffer = Buffer::new();
-    let mut seq: Vec<u8> = Vec::new();
-    let mut history_cursor = history::Cursor::new(ctx.history);
-    try!(ctx.term.protect());
-    loop {
-        try!(ctx.raw.write(&buffer.get_line(ctx.prompt)));
-        let byte = try!(try!(ctx.term.read_byte()).ok_or(Error::EndOfFile));
-        seq.push(byte);
-
-        match parser::parse(&seq, ctx.enc) {
-            parser::Result::Error(len) => {
-                for _ in (0..len) {
-                    seq.remove(0);
-                }
-            },
-            parser::Result::Incomplete => (),
-            parser::Result::Success(token, len) => {
-                match instr::interpret_token(token) {
-                    instr::Instr::Done                   => {
-                        return Result::Ok(buffer.to_string());
-                    },
-                    instr::Instr::DeleteCharLeftOfCursor => {
-                        buffer.delete_char_left_of_cursor();
-                    },
-                    instr::Instr::DeleteCharRightOfCursor => {
-                        buffer.delete_char_right_of_cursor();
-                    },
-                    instr::Instr::DeleteCharRightOfCursorOrEOF => {
-                        if !buffer.delete_char_right_of_cursor() {
-                            return Err(Error::EndOfFile);
-                        }
-                    },
-                    instr::Instr::MoveCursorLeft => {
-                        buffer.move_left();
-                    },
-                    instr::Instr::MoveCursorRight => {
-                        buffer.move_right();
-                    },
-                    instr::Instr::MoveCursorStart        => buffer.move_start(),
-                    instr::Instr::MoveCursorEnd          => buffer.move_end(),
-                    instr::Instr::HistoryPrev            => {
-                        if history_cursor.incr() {
-                            buffer.swap()
-                        }
-                        history_cursor.get().map(|s| buffer.replace(s));
-                    },
-                    instr::Instr::HistoryNext            => {
-                        if history_cursor.decr() {
-                            buffer.swap()
-                        }
-                        history_cursor.get().map(|s| buffer.replace(s));
-                    },
-                    instr::Instr::Noop                   => (),
-                    instr::Instr::Cancel                 => return Err(Error::EndOfFile),
-                    instr::Instr::Clear                  => try!(ctx.raw.clear()),
-                    instr::Instr::InsertAtCursor(text)   => {
-                        buffer.insert_chars_at_cursor(text)
-                    }
-                };
-                for _ in (0..len) {
-                    seq.remove(0);
-                }
-            }
-        };
-    }
-}
+use term::Term;
+use edit::EditCtx;
+use run::RunIO;
 
 pub struct Copperline {
     term: Term,
@@ -145,17 +74,12 @@ impl Copperline {
         if Term::is_unsupported_term() || !self.term.is_a_tty() {
             return Err(Error::UnsupportedTerm);
         }
-        let result = self.term.acquire_raw_mode().and_then(|mut raw| {
-            edit(EditCtx {
-                term: &mut self.term,
-                raw: &mut raw,
-                history: &self.history,
-                prompt: prompt,
-                enc: enc
-            })
-        });
+        let mut io = try!(self.term.acquire_io());
+        let ctx = EditCtx::new(prompt, &self.history, enc);
+        let res = run::run(ctx, &mut io);
+        drop(io);
         println!("");
-        result
+        res
     }
 
     /// Reads a line from the input using the specified prompt and encoding.
@@ -200,8 +124,10 @@ impl Copperline {
 
     /// Clears the screen.
     pub fn clear_screen(&mut self) -> Result<(), Error> {
-        let mut raw = try!(self.term.acquire_raw_mode());
-        raw.clear().map_err(Error::ErrNo)
+        let mut io = try!(self.term.acquire_io());
+        let mut line = builder::Builder::new();
+        line.clear_screen();
+        io.write(line.build())
     }
 
 }

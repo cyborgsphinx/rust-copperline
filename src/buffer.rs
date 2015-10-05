@@ -5,6 +5,8 @@ use unicode_width::UnicodeWidthStr;
 
 use strcursor::StrCursor;
 
+use builder::Builder;
+
 pub struct Buffer {
     front_buf: String,
     back_buf: String,
@@ -24,11 +26,6 @@ impl Buffer {
     pub fn swap(&mut self) {
         swap(&mut self.front_buf, &mut self.back_buf);
         self.pos = self.front_buf.len();
-    }
-
-    pub fn reset(&mut self) {
-        self.front_buf.clear();
-        self.pos = 0;
     }
 
     pub fn replace(&mut self, s: &str) {
@@ -107,18 +104,28 @@ impl Buffer {
          UnicodeWidthStr::width(self.cursor().slice_before())
     }
 
-    pub fn get_line(&self, prompt: &str) -> Vec<u8> {
-        let mut seq = Vec::new();
-        seq.extend("\r".as_bytes());
-        seq.extend(prompt.as_bytes());
-        seq.extend(self.front_buf.as_bytes());
-        seq.extend("\x1b[0K".as_bytes());
-        seq.extend(&format!("\r\x1b[{}C", prompt.len() + self.char_pos()).into_bytes());
-        seq
+    pub fn get_line(&self, prompt: &str, clear: bool) -> Vec<u8> {
+        let mut line = Builder::new();
+        if clear {
+            line.clear_screen();
+        }
+        line.carriage_return();
+        line.append(prompt);
+        line.append(&self.front_buf);
+        line.erase_to_right();
+        line.set_cursor_pos(prompt.len() + self.char_pos());
+        line.build()
     }
 
     pub fn to_string(self) -> String {
         self.front_buf
+    }
+
+    pub fn drain(&mut self) -> String {
+        let mut s = String::new();
+        swap(&mut s, &mut self.front_buf);
+        self.pos = 0;
+        s
     }
 
 }
